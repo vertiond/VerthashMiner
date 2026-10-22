@@ -65,15 +65,28 @@ jobs:
         shell: bash
     env:
       DEBIAN_FRONTEND: noninteractive
+      OPENSSL_VERSION: '3.5.9'
+      OPENSSL_SHA256: 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
       CURL_VERSION: '8.22.0'
       CURL_SHA256: f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
     steps:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl xz-utils make cmake g++ libjansson-dev libssl-dev ocl-icd-opencl-dev opencl-headers
+          apt-get install -y --no-install-recommends ca-certificates curl xz-utils perl make cmake g++ libjansson-dev ocl-icd-opencl-dev opencl-headers
 
       - uses: actions/checkout@v4
+
+      # Ubuntu 20.04's OpenSSL 1.1.1 is end of life and too old for current curl.
+      - name: Build static OpenSSL
+        run: |
+          curl -fsSLO "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+          echo "${OPENSSL_SHA256}  openssl-${OPENSSL_VERSION}.tar.gz" | sha256sum -c -
+          tar xf "openssl-${OPENSSL_VERSION}.tar.gz"
+          cd "openssl-${OPENSSL_VERSION}"
+          ./Configure linux-x86_64 no-shared no-tests no-docs --prefix=/opt/openssl --libdir=lib
+          make -j"$(nproc)"
+          make install_sw
 
       - name: Build static libcurl
         run: |
@@ -81,7 +94,7 @@ jobs:
           echo "${CURL_SHA256}  curl-${CURL_VERSION}.tar.xz" | sha256sum -c -
           tar xf "curl-${CURL_VERSION}.tar.xz"
           cd "curl-${CURL_VERSION}"
-          ./configure --prefix=/opt/curl --disable-shared --enable-static --with-openssl \
+          ./configure --prefix=/opt/curl --disable-shared --enable-static --with-openssl=/opt/openssl \
             --without-zlib --without-brotli --without-zstd --without-libidn2 --without-libpsl \
             --without-nghttp2 --without-libssh2 --disable-ldap --disable-ldaps --disable-manual --disable-docs
           make -j"$(nproc)" install
@@ -91,7 +104,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           -DCURL_INCLUDE_DIR=/opt/curl/include -DCURL_LIBRARY=/opt/curl/lib/libcurl.a -DUSE_CURL_STATIC=ON
           -DJANSSON_LIBRARY=/usr/lib/x86_64-linux-gnu/libjansson.a
-          -DOPENSSL_USE_STATIC_LIBS=TRUE
+          -DOPENSSL_ROOT_DIR=/opt/openssl -DOPENSSL_USE_STATIC_LIBS=TRUE
           -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
           -DCMAKE_CXX_STANDARD_LIBRARIES="-ldl -lpthread"
 
