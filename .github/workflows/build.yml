@@ -1,8 +1,9 @@
 name: Build
 
+# Pull requests are built as a check. A version tag builds and drafts the
+# release; push the tag on its own, before the branch, so it gets its own run.
 on:
   push:
-    branches: ['**']
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -53,25 +54,46 @@ jobs:
           name: windows
           path: ${{ env.PKG }}
 
+  # Built on Ubuntu 20.04 (glibc 2.31) with curl, jansson, OpenSSL and the C++
+  # runtime linked in, so the binary runs on older distros without extra packages.
   linux:
     name: Linux (CUDA 11 + OpenCL)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:11.8.0-devel-ubuntu20.04@sha256:03681bbd11fea044ff3e3a5d65e190a6f935af30c56e03e740b27e4563f61e0f
+    defaults:
+      run:
+        shell: bash
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      CURL_VERSION: '8.22.0'
+      CURL_SHA256: f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
     steps:
-      - uses: actions/checkout@v4
-
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libcurl4-openssl-dev libjansson-dev libssl-dev ocl-icd-opencl-dev opencl-headers
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl xz-utils make cmake g++ libjansson-dev libssl-dev ocl-icd-opencl-dev opencl-headers
 
-      - uses: Jimver/cuda-toolkit@v0.2.35
-        with:
-          cuda: ${{ env.CUDA_VERSION }}
-          method: network
-          sub-packages: '["nvcc", "cudart"]'
+      - uses: actions/checkout@v4
+
+      - name: Build static libcurl
+        run: |
+          curl -fsSLO "https://curl.se/download/curl-${CURL_VERSION}.tar.xz"
+          echo "${CURL_SHA256}  curl-${CURL_VERSION}.tar.xz" | sha256sum -c -
+          tar xf "curl-${CURL_VERSION}.tar.xz"
+          cd "curl-${CURL_VERSION}"
+          ./configure --prefix=/opt/curl --disable-shared --enable-static --with-openssl \
+            --without-zlib --without-brotli --without-zstd --without-libidn2 --without-libpsl \
+            --without-nghttp2 --without-libssh2 --disable-ldap --disable-ldaps --disable-manual --disable-docs
+          make -j"$(nproc)" install
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCURL_INCLUDE_DIR=/opt/curl/include -DCURL_LIBRARY=/opt/curl/lib/libcurl.a -DUSE_CURL_STATIC=ON
+          -DJANSSON_LIBRARY=/usr/lib/x86_64-linux-gnu/libjansson.a
+          -DOPENSSL_USE_STATIC_LIBS=TRUE
+          -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+          -DCMAKE_CXX_STANDARD_LIBRARIES="-ldl -lpthread"
 
       - name: Build
         run: cmake --build build -j"$(nproc)"
