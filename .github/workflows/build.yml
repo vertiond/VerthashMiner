@@ -1,0 +1,112 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CUDA_VERSION: '11.8.0'
+
+jobs:
+  windows:
+    name: Windows (CUDA 11 + OpenCL)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+
+      # CUDA 11.8 predates the MSVC shipped with VS 2022 17.10+, so allow it explicitly.
+      - name: Configure
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -DCUDA_NVCC_FLAGS="-allow-unsupported-compiler;-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || ver="${GITHUB_SHA::7}"
+          dir="VerthashMiner-${ver}-CUDA11-windows"
+          mkdir -p "dist/$dir"
+          cp build/Release/VerthashMiner.exe LICENSE README.md "dist/$dir/"
+          cp -r src/kernels "dist/$dir/kernels"
+          printf 'VerthashMiner.exe --gen-verthash-data verthash.dat\r\n' > "dist/$dir/generate_verthash_data.bat"
+          (cd dist && 7z a "$dir.zip" "$dir" > /dev/null)
+          echo "PKG=dist/$dir.zip" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: ${{ env.PKG }}
+
+  linux:
+    name: Linux (CUDA 11 + OpenCL)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libjansson-dev libssl-dev ocl-icd-opencl-dev opencl-headers
+
+      - uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Package
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == tag ]] || ver="${GITHUB_SHA::7}"
+          dir="VerthashMiner-${ver}-CUDA11-linux"
+          mkdir -p "dist/$dir"
+          cp build/VerthashMiner LICENSE README.md "dist/$dir/"
+          cp -r src/kernels "dist/$dir/kernels"
+          tar -C dist -czf "dist/$dir.tar.gz" "$dir"
+          echo "PKG=dist/$dir.tar.gz" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: ${{ env.PKG }}
+
+  # A version tag creates a draft release with both builds attached, next to
+  # the tagged source. Publish it by hand after checking it.
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --draft --title "$GITHUB_REF_NAME"

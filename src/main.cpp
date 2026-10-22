@@ -3739,7 +3739,9 @@ static int stratum_thread(void *userdata)
             jobIDsNotEq = strcmp(stratum.job.job_id, g_work.job_id);
         }
 
-        if ((g_work_time == 0) || (jobIDsNotEq != 0))
+        // Don't release the miner threads until the pool has sent a job.
+        // Otherwise they build work from a NULL job_id and crash.
+        if ((stratum.job.job_id != NULL) && ((g_work_time == 0) || (jobIDsNotEq != 0)))
         {
             mtx_lock(&g_work_lock);
 
